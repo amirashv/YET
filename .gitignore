@@ -128,3 +128,7 @@ dmypy.json
 # Pyre type checker
 .pyre/
 .Rproj.user
+
+# YETI24 runtime outputs
+yeti24/Data/*.csv
+yeti24/Data/*.log
