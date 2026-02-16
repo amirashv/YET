@@ -398,35 +398,47 @@ class YETI:
         if self.frame_L is None or self.frame_R is None:
             return None
 
-        if self.new_frame:
-            x, y, w, h = self.eye_frame_coords_L
-            self.eye_frame_L = self.frame_L[y : y + h, x : x + w]
-            self.eye_frame_L = cv.cvtColor(self.eye_frame_L, cv.COLOR_BGR2GRAY)
 
-            x, y, w, h = self.eye_frame_coords_R
-            self.eye_frame_R = self.frame_R[y : y + h, x : x + w]
-            self.eye_frame_R = cv.cvtColor(self.eye_frame_R, cv.COLOR_BGR2GRAY)
+        FIXED_EYE_SIZE = (64, 48)  # (width, height). Try (60,36) or (80,60) if needed.
+
+        # LEFT
+        x, y, w, h = self.eye_frame_coords_L
+        self.eye_frame_L = self.frame_L[y : y + h, x : x + w]
+        self.eye_frame_L = cv.cvtColor(self.eye_frame_L, cv.COLOR_BGR2GRAY)
+        self.eye_frame_L = cv.resize(self.eye_frame_L, FIXED_EYE_SIZE, interpolation=cv.INTER_AREA)
+
+        # RIGHT
+        x, y, w, h = self.eye_frame_coords_R
+        self.eye_frame_R = self.frame_R[y : y + h, x : x + w]
+        self.eye_frame_R = cv.cvtColor(self.eye_frame_R, cv.COLOR_BGR2GRAY)
+        self.eye_frame_R = cv.resize(self.eye_frame_R, FIXED_EYE_SIZE, interpolation=cv.INTER_AREA)
 
         return self.eye_frame
 
     def update_quad_bright(self) -> tuple:
         """
-        Updating the quadrant brightness vector # now for the 4 quad left + 4 quad right = 8 features -> octant brightness.
+        Updating the quadrant brightness vector:
+        4 quads left + 4 quads right = 8 features.
         """
-        if self.new_frame:
+        if not self.new_frame:
+            return self.quad_bright
 
-            def quad(img):
-                w, h = np.shape(img)
-                b_NW = np.mean(img[0 : int(h / 2), 0 : int(w / 2)])
-                b_NE = np.mean(img[int(h / 2) : h, 0 : int(w / 2)])
-                b_SW = np.mean(img[0 : int(h / 2), int(w / 2) : w])
-                b_SE = np.mean(img[int(h / 2) : h, int(w / 2) : w])
-                return (b_NW, b_NE, b_SW, b_SE)
+        # guard: eye frames might not be available yet
+        if self.eye_frame_L is None or self.eye_frame_R is None:
+            return self.quad_bright
 
-            qb_L = quad(self.eye_frame_L)
-            qb_R = quad(self.eye_frame_R)
+        def quad(img):
+            h, w = img.shape
+            h2, w2 = h // 2, w // 2
+            b_NW = np.mean(img[0:h2, 0:w2])
+            b_NE = np.mean(img[h2:h, 0:w2])
+            b_SW = np.mean(img[0:h2, w2:w])
+            b_SE = np.mean(img[h2:h, w2:w])
+            return (b_NW, b_NE, b_SW, b_SE)
 
-            self.quad_bright = qb_L + qb_R  # length 8
+        qb_L = quad(self.eye_frame_L)
+        qb_R = quad(self.eye_frame_R)
+        self.quad_bright = qb_L + qb_R
 
         return self.quad_bright
 
@@ -484,19 +496,11 @@ class YETI:
         self.offsets = (0, 0)
 
     def update_eye_pos(self) -> tuple:
-        """
-        Predict per-eye gaze positions (in SCREEN PIXELS, because Calib targets are pixel positions).
-        Stores:
-          - eye_pos_L, eye_pos_R : (x,y) in pixels
-          - eye_pro_L, eye_pro_R : (x,y) in proportions
-          - eye_pos (fused)      : optional, for drawing
-        """
         quad = ary(self.quad_bright)
 
         quad_L = quad[0:4].reshape(1, 4)
         quad_R = quad[4:8].reshape(1, 4)
 
-        # raw predictions in screen pixel coordinates
         raw_L = self.model_L.predict(quad_L)[0, :]
         raw_R = self.model_R.predict(quad_R)[0, :]
 
@@ -504,18 +508,23 @@ class YETI:
         self.eye_raw_R = tuple(raw_R)
         self.eye_raw = tuple((ary(self.eye_raw_L) + ary(self.eye_raw_R)) / 2.0)
 
-        # apply offsets (same offsets for both, if you keep quick-cal)
         self.eye_pos_L = tuple(ary(self.eye_raw_L) + ary(self.offsets))
         self.eye_pos_R = tuple(ary(self.eye_raw_R) + ary(self.offsets))
 
-        # proportions relative to screen
         self.eye_pro_L = tuple(ary(self.eye_pos_L) / ary(self.surf_size))
         self.eye_pro_R = tuple(ary(self.eye_pos_R) / ary(self.surf_size))
 
-        # OPTIONAL fused point (not "averaging" unless you call it that)
-        # Here: simple mean just for visualization; you can remove if teacher dislikes it.
-        self.eye_pos = tuple((ary(self.eye_pos_L) + ary(self.eye_pos_R)) / 2.0)
+        # --- fused point + smoothing (NEW) ---
+        raw_fused = (ary(self.eye_pos_L) + ary(self.eye_pos_R)) / 2.0
+
+        ALPHA = 0.2  # 0.1 = smoother/slower, 0.3 = faster/more jitter
+        if not hasattr(self, "_eye_pos_smooth"):
+            self._eye_pos_smooth = raw_fused.astype(float)
+
+        self._eye_pos_smooth = ALPHA * raw_fused + (1 - ALPHA) * self._eye_pos_smooth
+        self.eye_pos = tuple(self._eye_pos_smooth.astype(int))
         self.eye_pro = tuple(ary(self.eye_pos) / ary(self.surf_size))
+        # --- end NEW ---
 
         return self.eye_pos_L, self.eye_pos_R
 
