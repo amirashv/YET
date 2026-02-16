@@ -1,11 +1,17 @@
 import csv
 import time
-
+import os
 import serial
 
 PORT = "/dev/cu.usbmodem1101"
 BAUD = 115200
-OUTFILE = "imu_test_1.csv"
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE_DIR, "..", "data")
+os.makedirs(DATA_DIR, exist_ok=True)
+
+timestamp = time.strftime("%Y%m%d_%H%M%S")
+OUTFILE = os.path.join(DATA_DIR, f"imu_log_{timestamp}.csv")
 
 ser = serial.Serial(PORT, BAUD, timeout=1)
 time.sleep(1.0)
