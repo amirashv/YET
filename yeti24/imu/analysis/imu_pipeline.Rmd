@@ -1,0 +1,432 @@
+---
+title: "IMU Head Motion Prototype — Gyroscope Processing Pipeline"
+author: "A Shymbolatova"
+date: "2026-02-11"
+output: html_document:     
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    df_print: paged
+---
+
+# System Context and Objective
+
+This document describes the gyroscope preprocessing pipeline implemented for the IMU module of the YETI24 low-cost eye-tracking prototype. The IMU is used to estimate relative head orientation, which can later be combined with eye-camera data for motion compensation and improved gaze stability.
+
+The pipeline includes sampling diagnostics, bias estimation, temporal filtering, and numerical integration. All processing is implemented in R and structured to ensure reproducibility across recordings and sensor units.
+
+# Data Acquisition and Inputs
+
+## Requirements
+
+This report uses R (≥4.0) and packages: tidyverse. Install once via install.packages("tidyverse").
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE
+)
+library(tidyverse)
+```
+
+## Load Data
+
+Two datasets are required:
+
+1.  Raw motion recording (D_1): gyroscope measurements during actual head movement.
+
+2.  Stationary bias recording (D_2): the same sensor placed still, used to estimate the gyroscope offset (“bias”) that is present even when the true angular velocity is zero.
+
+This separation is necessary because gyroscopes typically output a small non-zero value at rest, and integrating this offset over time would cause large drift in estimated orientation.
+
+The CSV files must contain columns t_mcu_ms, gx_raw, gy_raw, and gz_raw.
+
+```{r}
+D_1 <- read_csv("imu_raw_log copy.csv", show_col_types = FALSE) 
+D_2 <- read_csv("imu_bias_still copy.csv", show_col_types = FALSE) %>%
+  arrange(t_mcu_ms)
+```
+
+## Data Validation and Initial Preprocessing
+
+Before any computations, we verify that relevant columns are numeric and that timestamps are consistent. For the stationary (bias) recording, the first seconds can include startup artefacts (sensor warm-up, initialization, unstable sampling), so the first 2 seconds are removed to obtain a clean estimate of the “true rest” baseline.
+
+```{r}
+str(D_1) 
+str(D_2)
+
+# trim first 2 seconds from the data still in case startup is messy
+t0 <- min(D_2$t_mcu_ms)
+D_2 <- D_2 %>%
+  mutate(t_s = (t_mcu_ms - t0) / 1000) %>%
+  filter(t_s >= 2)
+```
+
+# Timestamp Analysis and Sampling Stability
+
+All later steps depend on the time step Δt between samples:
+
+-   Bias-corrected filtering uses Δt to set the smoothing strength consistently.
+
+-   Integration from angular velocity to angles uses Δt directly (angles = ∑ ω · Δt).
+
+-   Irregular sampling (“jitter”) increases error and makes drift worse.
+
+Therefore, we compute Δt from microcontroller timestamps and summarise the mean sampling interval, variability, and the implied sampling frequency (Hz).
+
+Microcontroller timestamps (`t_mcu_ms`) are recorded in milliseconds and converted to seconds before further processing to ensure consistency with SI units during filtering and numerical integration.
+
+The discrete-time integration of angular velocity requires a reliable estimate of the sampling interval. Let
+
+$$\Delta t_i = t_i - t_{i-1}$$
+
+where t_i is the microcontroller timestamp in seconds.
+
+The angular displacement is later computed as: $$\theta = \sum \omega_i \Delta t_i$$
+
+Any irregularity in Δt directly propagates into the orientation estimate.
+
+## Computation of the Δt
+
+Δt is computed as the difference between consecutive timestamps. The summary table reports:
+
+-   Mean Δt: average time between samples.
+
+-   SD(Δt) and CV (coefficient of variation): stability of sampling.
+
+-   fs_mean_hz: estimated sampling rate (1 / mean Δt).
+
+-   Percentiles (p50/p95/p99): whether there are occasional large gaps.
+
+Interpretation guideline: a low CV and tight percentiles indicate stable sampling; large p99 values suggest occasional timing drops (e.g., serial delays).
+
+```{r}
+
+D_1_dt <- D_1 %>%
+  mutate(
+    dt_ms = t_mcu_ms - lag(t_mcu_ms),
+    dt_s  = dt_ms / 1000,
+    t_s   = (t_mcu_ms - first(t_mcu_ms)) / 1000
+  ) %>%
+  filter(!is.na(dt_s))
+
+summary_dt <- D_1_dt %>%
+  summarise(
+    n = n(),
+    dt_mean_s = mean(dt_s),
+    dt_sd_s   = sd(dt_s),
+    dt_min_s  = min(dt_s),
+    dt_max_s  = max(dt_s),
+    fs_mean_hz = 1 / dt_mean_s,
+    jitter_cv  = dt_sd_s / dt_mean_s,
+    p50_dt_s = median(dt_s),
+    p95_dt_s = quantile(dt_s, 0.95),
+    p99_dt_s = quantile(dt_s, 0.99)
+  )
+
+print(summary_dt)
+
+dt_mean <- summary_dt$dt_mean_s
+dt_sd   <- summary_dt$dt_sd_s
+fs      <- summary_dt$fs_mean_hz
+cv      <- summary_dt$jitter_cv
+
+cat("\n--- Interpretation ---\n")
+cat(sprintf("Estimated sampling rate (mean): %.2f Hz\n", fs))
+cat(sprintf("Mean Δt: %.6f s; SD(Δt): %.6f s; CV: %.3f\n", dt_mean, dt_sd, cv))
+
+```
+
+## Visualization of the Δt Distribution
+
+The histogram of Δt serves as a diagnostic tool for assessing sampling stability. Ideally, Δt values cluster tightly around a single value, indicating a stable sampling rate.
+
+If the histogram shows a long right tail (i.e., occasional larger Δt values), this suggests delayed or irregular sampling. Such delays can lead to exaggerated integration steps (θ = ∑ ω·Δt), potentially producing spikes in estimated angles and reducing filter reliability. Therefore, inspecting this distribution is essential before proceeding with filtering and integration.
+
+```{r}
+ggplot(D_1_dt, aes(x = dt_s)) +
+  geom_histogram(bins = 50) +
+  labs(
+    title = "Δt distribution (from microcontroller timestamps)",
+    x = "Δt (seconds)",
+    y = "Count"
+  )
+```
+
+# Gyroscope Bias Estimation and Compensation
+
+A gyroscope measures angular velocity, but even when motionless it typically outputs a small constant offset (bias) plus random noise. If this bias is not removed, it will be integrated as if it were real rotation, causing strong drift in roll/pitch/yaw. We therefore estimate the bias from the stationary recording and subtract it from the motion recording.
+
+The gyroscope outputs angular velocity in radians per second (rad/s). Since timestamps are converted to seconds, integration produces angles in radians, which are subsequently converted to degrees for interpretability.
+
+A real gyroscope measures: $$\omega_{\text{measured}} = \omega_{\text{true}} + b + \epsilon $$
+
+where
+
+-   b = constant bias offset
+
+-   𝜖 = zero-mean noise
+
+When the sensor is stationary (ω_true = 0), the measured output approximates the bias term. Therefore, the bias is estimated as: $$b = \frac{1}{N} \sum_{i=1}^{N} \omega_i $$
+
+The corrected signal becomes: $$\omega_{\text{corrected}} = \omega_{\text{measured}} - b $$
+
+## Computation of the Bias (mean gyro while stationary)
+
+We compute the mean (bias estimate) and standard deviation (noise level) per axis from the stationary dataset. The mean values are used for calibration; the SD values provide a rough indication of sensor noise when at rest.
+
+```{r}
+bias <- D_2 %>%
+  summarise(
+    bx = mean(gx_raw, na.rm = TRUE),
+    by = mean(gy_raw, na.rm = TRUE),
+    bz = mean(gz_raw, na.rm = TRUE),
+    sx = sd(gx_raw, na.rm = TRUE),
+    sy = sd(gy_raw, na.rm = TRUE),
+    sz = sd(gz_raw, na.rm = TRUE),
+    n = n()
+  )
+
+print(bias)
+```
+
+## Bias Results
+
+The values below are the stationary mean offsets for this specific IMU unit. They are written explicitly into the script to make the calibration reproducible (i.e., the motion log can be recalibrated without re-running the stationary log). Important: these values are sensor-specific; a different IMU will generally have different bx/by/bz.
+
+```{r}
+# Your bias values
+bx <- 0.0241
+by <- -0.0319
+bz <- -0.0110
+```
+
+## Verification of Bias Compensation
+
+After bias subtraction, the stationary gyroscope means should be close to zero on all axes. Small residual offsets are normal (finite sample + noise), but large residual means would suggest either an incorrect bias estimate or that the “stationary” recording contained movement.
+
+```{r}
+D_2 %>%
+  summarise(
+    mean_gx_raw = mean(gx_raw),
+    mean_gy_raw = mean(gy_raw),
+    mean_gz_raw = mean(gz_raw),
+    mean_gx_cal = mean(gx_raw - bias$bx),
+    mean_gy_cal = mean(gy_raw - bias$by),
+    mean_gz_cal = mean(gz_raw - bias$bz)
+  )
+```
+
+## Calibration of the Actual Data
+
+We apply the estimated bias to the motion recording by subtracting the per-axis offsets. This produces calibrated angular velocities (gx_cal, gy_cal, gz_cal) that are closer to the true physical rotation rates and reduce drift during later integration.
+
+```{r}
+D_1_cal <- D_1 %>%
+  mutate(
+    gx_cal = gx_raw - bx,
+    gy_cal = gy_raw - by,
+    gz_cal = gz_raw - bz
+  )
+```
+
+## Visualization of the Raw vs Bias-corrected Gyroscope Distributions
+
+The histograms provide a simple check that calibration behaved as expected. After bias correction, the distributions should shift toward zero (especially visible around the center), while the overall spread (noise) remains similar.
+
+```{r}
+D_1_cal_long <- D_1_cal %>%
+  select(t_mcu_ms, gx_raw, gy_raw, gz_raw, gx_cal, gy_cal, gz_cal) %>%
+  pivot_longer(-t_mcu_ms, names_to = "signal", values_to = "value")
+
+ggplot(D_1_cal_long, aes(x = value)) +
+  geom_histogram(bins = 60) +
+  facet_wrap(~signal, scales = "free") +
+  labs(title = "Raw vs bias-corrected gyroscope distributions")
+```
+
+# Temporal Filtering (Exponential Moving Average)
+
+Even after bias correction, gyroscope signals contain high-frequency noise. Because integration accumulates noise over time, it is useful to apply light temporal smoothing before integration. Here we use an exponential moving average (EMA), which is a simple low-pass filter that reduces noise while keeping the signal responsive.
+
+## Creation of New Dataset
+
+We create a clean working dataset (D_3) with ordered timestamps and a per-sample Δt (in seconds), which is required both for filtering and for numerical integration.
+
+```{r}
+D_3 <- D_1_cal %>%
+   arrange(t_mcu_ms) %>%
+  mutate(
+    dt_s = (t_mcu_ms - lag(t_mcu_ms)) / 1000
+  ) %>%
+  filter(!is.na(dt_s))
+```
+
+## Computation of α
+
+The EMA is controlled by α. We define it using a time constant τ:
+
+-   τ sets the “memory” of the filter (larger τ → smoother but slower response).
+
+-   α converts τ into a per-sample smoothing weight.
+
+The coefficient is derived from the time constant τ: $$\alpha = \frac{\tau}{\tau + \Delta t}$$
+
+This links the filter strength to the actual sampling rate so the behaviour remains comparable across recordings.
+
+```{r}
+tau <- 0.1
+alpha <- tau / (tau + dt_mean) # alpha computed using mean sampling interval
+
+alpha
+```
+
+## EMA Filter
+
+The EMA outputs a filtered signal y where each new value is a weighted combination of the previous filtered value and the current observation. This reduces rapid noise fluctuations while preserving the general movement trend, which improves the stability of later angle integration.
+
+The exponential moving average (EMA) is defined recursively as: $$y_i = \alpha y_{i-1} + (1 - \alpha)x_i$$
+
+where:
+
+-   x_i = bias-corrected angular velocity
+
+-   y_i = filtered output
+
+-   α ∈ (0,1) = smoothing coefficient
+
+Larger τ increases smoothing but reduces responsiveness.
+
+```{r}
+
+ema_filter <- function(x, alpha) {
+  y <- numeric(length(x))
+  y[1] <- x[1]
+  for (i in 2:length(x)) {
+    y[i] <- alpha * y[i - 1] + (1 - alpha) * x[i]
+  }
+  y
+}
+
+D_3 <- D_3 %>%
+  mutate(
+    gx_f = ema_filter(gx_cal, alpha),
+    gy_f = ema_filter(gy_cal, alpha),
+    gz_f = ema_filter(gz_cal, alpha)
+  )
+```
+
+## Visualization of the Calibrated vs Filtered Gyro (X / Y / Z)
+
+These time-series plots compare calibrated angular velocity to the filtered output. We show the first \~1000 samples to keep the figure readable and to make the smoothing effect visible. The filtered signal should follow the same overall movement pattern but with reduced high-frequency jitter.
+
+```{r}
+D_3_long_x <- D_3 %>%
+  select(t_mcu_ms, gx_cal, gx_f) %>%
+  slice(1:1000) %>%
+  pivot_longer(-t_mcu_ms, names_to = "signal", values_to = "value")
+
+ggplot(D_3_long_x, aes(x = t_mcu_ms, y = value, color = signal)) +
+  geom_line() +
+  labs(
+    title = "Calibrated vs Filtered Gyro (X axis)",
+    x = "Time (ms)",
+    y = "Angular velocity"
+  )
+
+D_3_long_y <- D_3 %>%
+  select(t_mcu_ms, gy_cal, gy_f) %>%
+  slice(1:1000) %>%
+  pivot_longer(-t_mcu_ms, names_to = "signal", values_to = "value")
+
+ggplot(D_3_long_y, aes(x = t_mcu_ms, y = value, color = signal)) +
+  geom_line() +
+  labs(
+    title = "Calibrated vs Filtered Gyro (Y axis)",
+    x = "Time (ms)",
+    y = "Angular velocity"
+  )
+
+D_3_long_z <- D_3 %>%
+  select(t_mcu_ms, gz_cal, gz_f) %>%
+  slice(1:1000) %>%
+  pivot_longer(-t_mcu_ms, names_to = "signal", values_to = "value")
+
+ggplot(D_3_long_z, aes(x = t_mcu_ms, y = value, color = signal)) +
+  geom_line() +
+  labs(
+    title = "Calibrated vs Filtered Gyro (Z axis)",
+    x = "Time (ms)",
+    y = "Angular velocity"
+  )
+
+```
+
+# Numerical Integration to Relative Orientation
+
+Finally, we estimate relative orientation by integrating the filtered angular velocities over time. This yields roll/pitch/yaw angles relative to the start of the recording (initial angle = 0). Note: gyroscope-only integration is known to drift over time because small residual bias and noise accumulate. The output is therefore best interpreted as short-term relative motion, not long-term absolute orientation.
+
+Relative orientation is obtained by discrete-time integration of filtered angular velocity: $$\theta_i = \theta_{i-1} + \omega_i \Delta t_i$$
+
+In implementation, this is equivalent to: $$\theta = \text{cumsum}(\omega_i \Delta t_i)$$
+
+Roll, pitch, and yaw are computed independently per axis under the assumption of small-angle approximation and absence of cross-axis coupling.
+
+Because integration accumulates all past errors, even small residual bias or noise leads to drift over time.
+
+## Data Preprocessing
+
+We compute roll/pitch/yaw in radians via cumulative summation of ω · Δt, then convert to degrees for interpretability. This is a standard numerical integration approach for discrete sensor samples.
+
+```{r}
+D_3 <- D_3 %>%
+  mutate(
+    roll_rad  = cumsum(gx_f * dt_s),
+    pitch_rad = cumsum(gy_f * dt_s),
+    yaw_rad   = cumsum(gz_f * dt_s)
+  )
+
+
+rad2deg <- function(x) x * 180 / pi
+
+D_3 <- D_3 %>%
+  mutate(
+    roll_deg  = rad2deg(roll_rad),
+    pitch_deg = rad2deg(pitch_rad),
+    yaw_deg   = rad2deg(yaw_rad)
+  )
+```
+
+## Visualization of Integrated Angles (relative orientation)
+
+The plot shows the integrated roll/pitch/yaw angles over time. It is normal for the yaw (often corresponding to the Z axis depending on sensor mounting) to look less stable and to drift more, because yaw is typically most sensitive to small bias and cannot be “corrected” without an external reference (e.g., accelerometer/magnetometer or optical constraints). Therefore, the yaw curve should be interpreted cautiously, especially over longer durations.
+
+```{r}
+D_3_long <- D_3 %>%
+  mutate(t_s = (t_mcu_ms - first(t_mcu_ms)) / 1000) %>%
+  select(t_s, roll_deg, pitch_deg, yaw_deg) %>%
+  pivot_longer(-t_s, names_to = "angle", values_to = "deg")
+
+ggplot(D_3_long, aes(x = t_s, y = deg, color = angle)) +
+  geom_line() +
+  labs(
+    title = "Integrated angles (relative orientation)",
+    x = "Time (s)",
+    y = "Angle (degrees)"
+  )
+```
+
+# Interpretation and System Limitations
+
+The orientation estimates produced by this pipeline represent relative motion only and assume that bias has been accurately removed.
+
+Limitations of gyroscope-only integration include:
+
+-   Accumulated drift over time
+
+-   Sensitivity to residual bias
+
+-   Increased instability in yaw estimation
+
+For long-duration stability, fusion with accelerometer, magnetometer, or optical constraints is recommended. In the YETI24 system, these orientation estimates can be used for head-motion compensation or as input to future sensor-fusion algorithms.
