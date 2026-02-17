@@ -129,6 +129,35 @@ dmypy.json
 .pyre/
 .Rproj.user
 
-# YETI24 runtime outputs
+# ==========================
+# YETI24 Runtime Outputs
+# ==========================
+
 yeti24/Data/*.csv
 yeti24/Data/*.log
+
+yeti24/imu/data/*.csv
+yeti24/imu/data/*.txt
+!yeti24/imu/data/example_short.csv
+
+# ==========================
+# R Outputs
+# ==========================
+
+*.html
+*.knit.md
+*.Rhistory
+*.RData
+
+# ==========================
+# Python Cache
+# ==========================
+
+__pycache__/
+*.pyc
+
+# ==========================
+# macOS
+# ==========================
+
+.DS_Store
