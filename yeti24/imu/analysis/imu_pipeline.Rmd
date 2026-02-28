@@ -7,11 +7,12 @@ output: html_document:
     toc_depth: 3
     number_sections: true
     df_print: paged
+bibliography: references.bib
 ---
 
 # System Context and Objective
 
-This document describes the gyroscope preprocessing pipeline implemented for the IMU module of the YETI24 low-cost eye-tracking prototype. The IMU is used to estimate relative head orientation, which can later be combined with eye-camera data for motion compensation and improved gaze stability.
+This document describes the gyroscope preprocessing pipeline implemented for the IMU module of the YETI24 low-cost eye-tracking prototype. The IMU is used to estimate relative head orientation, which can later be combined with eye-camera data for motion compensation and improved gaze stability [@larsson2014].
 
 The pipeline includes sampling diagnostics, bias estimation, temporal filtering, and numerical integration. All processing is implemented in R and structured to ensure reproducibility across recordings and sensor units.
 
@@ -38,7 +39,7 @@ Two datasets are required:
 
 2.  Stationary bias recording (D_2): the same sensor placed still, used to estimate the gyroscope offset (“bias”) that is present even when the true angular velocity is zero.
 
-This separation is necessary because gyroscopes typically output a small non-zero value at rest, and integrating this offset over time would cause large drift in estimated orientation.
+This separation is necessary because gyroscopes typically output a small non-zero value at rest, and integrating this offset over time would cause large drift in estimated orientation [@ji-hoon2025].
 
 The CSV files must contain columns t_mcu_ms, gx_raw, gy_raw, and gz_raw.
 
@@ -430,3 +431,5 @@ Limitations of gyroscope-only integration include:
 -   Increased instability in yaw estimation
 
 For long-duration stability, fusion with accelerometer, magnetometer, or optical constraints is recommended. In the YETI24 system, these orientation estimates can be used for head-motion compensation or as input to future sensor-fusion algorithms.
+
+# 

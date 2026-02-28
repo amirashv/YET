@@ -12,6 +12,8 @@ It provides:
 
 The module is designed to be self-contained and reproducible.
 
+This model used the ST LSM6DS3 datasheet because the IMU on the module belongs to the LSM6DS family, and this datasheet documents the accelerometer/gyroscope operating principles and key specifications relevant to my setup; the module documentation identifies the sensor as the LSM6DS3 (Seeed Studio, n.d.).
+
 ⸻
 
 ## Architecture
@@ -155,3 +157,9 @@ Future extensions may include accelerometer or optical fusion.
 This module is developed as a subsystem of YETI24 but remains independently testable.
 
 It is intended for future head-motion compensation within the eye-tracking pipeline.
+
+⸻
+
+## References
+
+Seeed Studio. (n.d.). Grove – 6-Axis Accelerometer&Gyroscope [GitHub repository file]. GitHub. Retrieved February 21, 2026, from https://github.com/Seeed-Studio/wiki-documents/blob/docusaurus-version/docs/Sensor/Grove/Grove_Sensors/Accelerometer/Grove-6-Axis_AccelerometerAndGyroscope.md

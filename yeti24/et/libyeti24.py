@@ -154,7 +154,7 @@ class YETI24:
         6) train()               -> train two monocular linear models:
                                   - model_L: 4 features -> (x,y)
                                   - model_R: 4 features -> (x,y)
-        7) update_eye_pos()      -> predict left/right gaze, fuse by averaging, smooth fused point
+        7) update_eye_pos()      -> predict left/right gaze, fuse by averaging, clip fused point to screen bounds
         8) update_eye_stim()     -> transform gaze from screen pixels to stimulus coordinates
         9) record()              -> append a row to self.data (L/R + fused)
 
@@ -166,8 +166,7 @@ class YETI24:
 
     Notes:
         - Eye detection is considered successful only if BOTH cameras detect exactly one eye.
-        - The "fused" point (self.eye_pos) is the average of left/right predictions, optionally
-          exponentially smoothed.
+        - The "fused" point (self.eye_pos) is the average of left/right predictions.
     """
 
     frame = None
@@ -584,19 +583,12 @@ class YETI24:
             2) Predict raw gaze positions with model_L and model_R
             3) Apply shared offsets to each monocular prediction
             4) Fuse by averaging left/right
-            5) Smooth fused point with exponential smoothing (alpha = ALPHA)
+            5) Clip fused point to screen bounds
 
         Returns
         -------
         (tuple, tuple)
             (eye_pos_L, eye_pos_R) in SCREEN PIXELS.
-
-        Side effects
-        ------------
-        - self.eye_raw_L, self.eye_raw_R, self.eye_raw (fused raw)
-        - self.eye_pos_L, self.eye_pos_R (offset-applied)
-        - self.eye_pos (fused + smoothed)  <-- main point used for drawing
-        - self.eye_pro_* computed relative to pygame surface size
         """
         quad = ary(self.quad_bright)
 
@@ -616,18 +608,12 @@ class YETI24:
         self.eye_pro_L = tuple(ary(self.eye_pos_L) / ary(self.surf_size))
         self.eye_pro_R = tuple(ary(self.eye_pos_R) / ary(self.surf_size))
 
-        # --- fused point + smoothing ---
+        # --- fused point ---
         raw_fused = (ary(self.eye_pos_L) + ary(self.eye_pos_R)) / 2.0
 
-        ALPHA = 0.2
-        if not hasattr(self, "_eye_pos_smooth"):
-            self._eye_pos_smooth = raw_fused.astype(float)
-
-        self._eye_pos_smooth = ALPHA * raw_fused + (1 - ALPHA) * self._eye_pos_smooth
-
         # CLIP to screen bounds (prevents "disappearing" dot)
-        x = int(np.clip(self._eye_pos_smooth[0], 0, self.surf_size[0] - 1))
-        y = int(np.clip(self._eye_pos_smooth[1], 0, self.surf_size[1] - 1))
+        x = int(np.clip(raw_fused[0], 0, self.surf_size[0] - 1))
+        y = int(np.clip(raw_fused[1], 0, self.surf_size[1] - 1))
         self.eye_pos = (x, y)
 
         self.eye_pro = (x / self.surf_size[0], y / self.surf_size[1])
@@ -746,7 +732,7 @@ class YETI24:
         Draw the current gaze point(s) onto a pygame surface.
 
         Draws:
-            - self.eye_pos (fused + smoothed) in red
+            - self.eye_pos (fused) in red
             - optionally self.eye_raw in green
             - optionally self.eye_stim in blue
 
@@ -755,7 +741,7 @@ class YETI24:
         surface :
             Pygame surface to draw on.
         add_raw :
-            If True, also draw raw (unoffset / unsmoothed) estimate.
+            If True, also draw raw fused (pre-offset) estimate.
         add_stim :
             If True, also draw stimulus-local gaze estimate.
         """

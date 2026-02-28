@@ -1,0 +1,309 @@
+---
+title: "YETI24 DIY Eye-Tracker Tutorial"
+author: "Amira Shymbolatova"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    df_print: paged
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+# What you will build
+
+This tutorial explains how to build and run YETI24, a low-cost
+dual-camera eye-tracker prototype hosted inside the YET repository:
+
+-   Eye-tracking software: yeti24/et/
+
+-   IMU prototype + logging: yeti24/imu/
+
+-   3D-printable parts: yeti24/cad/stl/ (and STEP in yeti24/cad/step/)
+
+The goal is that another person can reproduce the setup easily in a few
+hours (excluding 3D printing) by following the steps below.
+
+# Repository structure
+
+The relevant structure inside YET/yeti24/:
+
+-   cad/
+
+    -   stl/ — STL files to print
+
+    -   step/ — STEP CAD exports
+
+-   docs/ — documentation files (this tutorial lives here)
+
+-   et/ — eye-tracker application
+
+    -   Data/ — recordings / outputs (project-specific)
+
+    -   Stimuli/ — calibration / stimuli files (project-specific)
+
+    -   Config.csv — configuration file
+
+    -   haarcascade_eye.xml — eye detection cascade
+
+    -   libyeti24.py — eye-tracker library
+
+    -   run.py — main entry point for the eye tracker
+
+-   imu/ — IMU work
+
+    -   pico/ — microcontroller firmware/scripts
+
+    -   host/ — host-side scripts (PC/Mac)
+
+    -   analysis/ — data exploration/analysis
+
+    -   data/ — recorded IMU logs
+
+    -   imu/README.md — IMU-specific notes
+
+-   README.md — General notes
+
+# Bill of Materials (BOM)
+
+## Electronics
+
+-   USB endoscope camera with 5.5 mm diameter and LED lights (The cable
+    should be flexible and between 1.5 and 2m. You can find these for
+    \<10 EUR at various resellers. Before you buy, check that the USB
+    plug is compatible with your notebook computer)
+
+-   2 x IR LEDs Modules for Raspberry Pi Camera (850 nm)
+
+-   USB data cable with Micro-USB on one side, and on the other side,
+    whatever fits into your computer
+
+-   Power source for LEDs (USB 3W / battery pack / regulated supply)
+
+-   Microcontroller board (suggested to use Raspberry Pi Pico)
+
+-   IMU module (suggested to use LSM6DS)
+
+## 3D-printed parts
+
+STL files: yeti24/cad/stl/
+
+Print the parts required by your build (example list — adjust to match
+your final prototype):
+
+-   Wire_cap × 8
+
+-   Ir_led_clip × 2
+
+-   Ir_led_case × 2
+
+-   Hook_barebone_clip × 1
+
+-   Grove_mount × 1
+
+-   Et_mount.stl × 2
+
+-   Barebone_clip.stl × 1
+
+## Tools
+
+-   Screwdriver
+
+-   Pliers
+
+-   Wires (3.5 mm x 5 meters)
+
+-   (Optional) multimeter (recommended for LED wiring checks)
+
+-   Preferred programming environment (recommended ZED)
+
+# Step 1 — Print the parts
+
+STL files are located here:
+
+-   YET/yeti24/cad/stl/
+
+Recommended print settings:
+
+-   Layer height: 0.4 mm
+
+Checkpoint: parts fit without forcing; cameras sit tightly; clips lock
+as intended.
+
+# Step 2 — Assemble the hardware 
+
+![](Downloads/Picture1.jpg){width="300"}
+
+1.  Measure two long wires, one that would serve as a headband (fold in
+    half for stability) and the other that would hold the back of the
+    head. Use Hook_barebone_clip and Barebone_clip.stl to mount them
+    together. Two upper holes of the barebone should hold the headband
+    wire; two lower holes of the barebone should hold the wire for the
+    back of the head (ensure that the clips of the barebone look
+    outwards from the head).
+
+    1.  (Optional): On the headband wire, put on the Grove_mount to hold
+        the IMU. Beforehand, screw the IMU to the Grove_mount.
+
+2.  Measure two short wires, fold them in half and insert them through
+    both of the barebones upper and lower center holes. At the end of
+    both of these wires, put on the Et_mount (s).
+
+    1.  (Optional): on both of the short wires put on before Et_mount
+        (s), Ir_led_case (s) that are glued to Ir_led_clip (s).
+
+3.  Insert the left camera into the left Et_mount. Insert the right
+    camera into the right Et_mount. Clip both USB cameras to the
+    barebones outer clip.
+
+4.  (Optional) Cover the end of the wires with wire_cap (s)
+
+5.  Ensure the cameras are rigid and aligned.
+
+Checkpoint: lightly tapping the mount should not shift camera positions.
+
+# Step 3 — Attach IR LEDs
+
+IR LEDs stabilize eye image contrast and improve robustness of
+pupil/feature detection, reducing sensitivity to ambient lighting.
+
+## Mounting steps
+
+1.  Place each IR LED into the corresponding Ir_led_case (using a small
+    amount of glue).
+
+2.  Glue the case with the IR LED in it to Ir_led_clip.
+
+3.  Attach the LED modules near the cameras (preferably symmetric
+    left/right).
+
+4.  Route wiring safely away from the face and moving parts.
+
+Checkpoint: LEDs power on and stay cool during operation.
+
+## Safety note (IR LEDs)
+
+Infrared (IR) LEDs can still be harmful even though the light is not
+visible.
+
+-   Do not stare into powered IR LEDs.
+
+-   Use correct current limiting (resistor/driver) and verify LEDs do
+    not heat up.
+
+-   Avoid placing LEDs very close to the eyes or running them at
+    excessive brightness.
+
+# Step 4 — Software setup (running the eye tracker)
+
+The eye tracker is launched from:
+
+-   YET/yeti24/et/run.py
+
+## Recommended run workflow
+
+1.  Open Terminal.
+
+2.  Install ppipenv: python3 -m pipenv shell
+
+3.  Navigate to the eye-tracker folder: cd /path/to/YET/yeti24/et
+
+4.  Run: python run.py
+
+## Configuration file
+
+The main configuration is stored in:
+
+-   YET/yeti24/et/Config.csv
+
+YETI24 is configured via code / Config.csv. Most settings work
+out-of-the-box if you keep the default folder structure (et/Stimuli,
+et/Data, etc.). The key parameters define: camera device IDs, experiment
+metadata, stimulus paths, result output files, window/screen size, and
+slide timing.
+
+Most users only need to adjust:
+
+-   USB_L and USB_R: left/right USB camera indices (systems with a
+    built-in webcam often use index 0, so external cameras may start at
+    1+).
+
+-   EXP_ID: experiment identifier (used in filenames and saved results).
+
+-   EXPERIMENTER: experimenter identifier (useful when multiple people
+    collect data with different setups).
+
+-   WIDTH, HEIGHT: window size in pixels (set slightly below your real
+    screen resolution).
+
+-   SLIDE_TIME: stimulus duration in seconds (increase for reading
+    tasks, decrease for quick testing).
+
+-   STIM_FILE: file containing stimuli for your experiment
+
+## Calibration & quick validation
+
+-   The eye-tracker includes two calibration routines:
+
+    -   Initial calibration (training): the participant looks at nine
+        target dots on the screen one-by-one to build the gaze mapping.
+
+    -   Quick calibration: the participant looks at one dot in the
+        center of the screen.
+
+-   During an experiment, quick calibration can be used repeatedly to
+    quickly correct offsets caused by small head or camera movements,
+    which helps reduce drift from small movements
+
+-   This approach reduces the need for full head tracking or strict head
+    fixation, but it is still recommended to use:
+
+    -   a stable head mount (e.g., mounted on headphones / rigid frame),
+        and
+
+    -   a simple headrest when possible.
+
+Checkpoint: after calibration, the gaze point should move logically with
+where the participant looks.
+
+# Step 5 — IMU: running
+
+IMU-related work is located in:
+
+-   YET/yeti24/imu/
+
+Open the IMU documentation and get familiar with it:
+
+-   YET/yeti24/imu/README.md
+
+Typical workflow
+
+1.  Connect the IMU
+
+    Connect the IMU to your machine (via USB serial through a
+    microcontroller).
+
+    Tip: On macOS, list available serial ports: ls /dev/tty.\*
+
+2.  Download the code.py from the yeti24/imu/pico to the microcontroller
+
+3.  Open Terminal
+
+4.  Run: python3 -m pipenv shell
+
+5.  Navigate to the IMU host folder: cd /path/to/YET/yeti24/imu/host
+
+6.  Run: python log_imu.py
+
+7.  Expected output: streaming timestamped gyroscope measurements; data
+    saved into: YET/yeti24/imu/data/
+
+8.  After the data collection open in RStudio, imu_pipeline.Rmd from
+    yeti24/imu/analysis and follow the steps to filter the collected
+    data
+
+Checkpoint: a new log file appears, and values change when you move the
+device.
