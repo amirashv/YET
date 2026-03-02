@@ -66,7 +66,7 @@ D_2 <- D_2 %>%
 
 # Timestamp Analysis and Sampling Stability
 
-All later steps depend on the time step Δt between samples:
+All later steps depend on the time step Δt between samples [@woodman2007, @schwarzmann2025, @yang2021] :
 
 -   Bias-corrected filtering uses Δt to set the smoothing strength consistently.
 
@@ -157,7 +157,7 @@ ggplot(D_1_dt, aes(x = dt_s)) +
 
 # Gyroscope Bias Estimation and Compensation
 
-A gyroscope measures angular velocity, but even when motionless it typically outputs a small constant offset (bias) plus random noise. If this bias is not removed, it will be integrated as if it were real rotation, causing strong drift in roll/pitch/yaw. We therefore estimate the bias from the stationary recording and subtract it from the motion recording.
+A gyroscope measures angular velocity, but even when motionless it typically outputs a small constant offset (bias) plus random noise. If this bias is not removed, it will be integrated as if it were real rotation, causing strong drift in roll/pitch/yaw. We therefore estimate the bias from the stationary recording and subtract it from the motion recording [@woodman2007, @beavers2017, @ST_LSM6DS3_2018] .
 
 The gyroscope outputs angular velocity in radians per second (rad/s). Since timestamps are converted to seconds, integration produces angles in radians, which are subsequently converted to degrees for interpretability.
 
@@ -249,7 +249,7 @@ ggplot(D_1_cal_long, aes(x = value)) +
 
 # Temporal Filtering (Exponential Moving Average)
 
-Even after bias correction, gyroscope signals contain high-frequency noise. Because integration accumulates noise over time, it is useful to apply light temporal smoothing before integration. Here we use an exponential moving average (EMA), which is a simple low-pass filter that reduces noise while keeping the signal responsive.
+Even after bias correction, gyroscope signals contain high-frequency noise. Because integration accumulates noise over time, it is useful to apply light temporal smoothing before integration. Here we use an exponential moving average (EMA), which is a simple low-pass filter that reduces noise while keeping the signal responsive [@woodman2007, @ducard2018].
 
 ## Creation of New Dataset
 
@@ -266,7 +266,7 @@ D_3 <- D_1_cal %>%
 
 ## Computation of α
 
-The EMA is controlled by α. We define it using a time constant τ:
+The EMA is controlled by α [@haugen2008]. We define it using a time constant τ:
 
 -   τ sets the “memory” of the filter (larger τ → smoother but slower response).
 
@@ -285,7 +285,7 @@ alpha
 
 ## EMA Filter
 
-The EMA outputs a filtered signal y where each new value is a weighted combination of the previous filtered value and the current observation. This reduces rapid noise fluctuations while preserving the general movement trend, which improves the stability of later angle integration.
+The EMA outputs a filtered signal y where each new value is a weighted combination of the previous filtered value and the current observation. This reduces rapid noise fluctuations while preserving the general movement trend, which improves the stability of later angle integration [@ducard2018].
 
 The exponential moving average (EMA) is defined recursively as: $$y_i = \alpha y_{i-1} + (1 - \alpha)x_i$$
 
@@ -366,7 +366,7 @@ ggplot(D_3_long_z, aes(x = t_mcu_ms, y = value, color = signal)) +
 
 # Numerical Integration to Relative Orientation
 
-Finally, we estimate relative orientation by integrating the filtered angular velocities over time. This yields roll/pitch/yaw angles relative to the start of the recording (initial angle = 0). Note: gyroscope-only integration is known to drift over time because small residual bias and noise accumulate. The output is therefore best interpreted as short-term relative motion, not long-term absolute orientation.
+Finally, we estimate relative orientation by integrating the filtered angular velocities over time [@woodman2007]. This yields roll/pitch/yaw angles relative to the start of the recording (initial angle = 0). Note: gyroscope-only integration is known to drift over time because small residual bias and noise accumulate. The output is therefore best interpreted as short-term relative motion, not long-term absolute orientation.
 
 Relative orientation is obtained by discrete-time integration of filtered angular velocity: $$\theta_i = \theta_{i-1} + \omega_i \Delta t_i$$
 
